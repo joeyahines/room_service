@@ -11,18 +11,18 @@
 #include <LineFollower.h>
 
 #define SENSITIVITY 10000
-#define BASE_MOTOR_POWER 25
-#define DEBUG 
+#define BASE_MOTOR_POWER 20
+//#define DEBUG 
 
 LineFollower line_follower;
 int lastError = 0;
 int olddir = 0;
 
-#define RST_PIN         9           
-#define SS_PIN          10          
+#define RST_PIN 9           
+#define SS_PIN 10          
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 
-int target_room = 3;
+int target_room = 2;
 
 enum STATE
 {
@@ -32,6 +32,16 @@ enum STATE
     DONE,
     TURN_AROUND,
 };
+
+enum DELIVERY_STATUS {
+  FINDING_ROOM,
+  ROOM_FOUND,
+  RETURN_TO_HALLWAY,
+  RETURN
+};
+
+enum STATE state = STRAIGHT;
+enum DELIVERY_STATUS delivery_status = FINDING_ROOM;
 
 uint8_t room_number = 1;
 enum STATE last_turn = LEFT_TURN;
@@ -49,13 +59,13 @@ void motor_setup() {
 void set_motor_power(float power, int pwm_pin, int in1, int in2) {
   int pwm_value = power * 2.55;
 
-  if (pwm_value < -10) {
+  if (pwm_value < -5) {
     digitalWrite(in1, HIGH);
     digitalWrite(in2, LOW);
     analogWrite(pwm_pin, -pwm_value);
     
   }
-  else if (pwm_value > 10) {
+  else if (pwm_value > 5) {
     digitalWrite(in1, LOW);
     digitalWrite(in2, HIGH);
     analogWrite(pwm_pin, pwm_value);
@@ -101,16 +111,24 @@ int get_room_number() {
 int16_t prev_error = 0;
 int16_t integral = 0;
 
-void follow_line(int16_t distance_from_line) {
+void follow_line(int16_t distance_from_line, bool reverse) {
     //Base power of the motors
     unsigned int base_power = BASE_MOTOR_POWER;
     //Change in the base power
     int power;
+    int rev;
+
+    if (reverse) {
+      rev = -1;
+    }
+    else {
+      rev = 1;
+    }
 
     int16_t error = -distance_from_line;
     integral = (integral + error)/5;
     int16_t derivative = (error - prev_error)/5;
-    float kp = 2.0;
+    float kp = 1.4;
     float kd = 0.0;
     float ki = 0.0;
     power = kp * error + ki * integral + kd * derivative;
@@ -123,8 +141,8 @@ void follow_line(int16_t distance_from_line) {
       power = -100 - BASE_MOTOR_POWER;
     }
 
-    int right_motor_power = base_power - power;
-    int left_motor_power = base_power + power;
+    int right_motor_power = rev*(base_power - power);
+    int left_motor_power = rev*(base_power + power);
 #ifdef DEBUG
     //Set motor power
     Serial.print("Motors: ");
@@ -190,33 +208,94 @@ void loop() {
 #endif
 
     if (room_number == target_room) {
-      set_left_motor_power(30);
-      set_right_motor_power(0);
-      bool new_line_found = false;
-
-      while (!new_line_found) {
-        uint8_t line_reading  = line_follower.get_line_reading(SENSITIVITY);
-
-        new_line_found =  line_reading & 0b1100000;
+      if (delivery_status == FINDING_ROOM) {
+        state = RIGHT_TURN;
+        delivery_status = ROOM_FOUND;
       }
-      set_left_motor_power(BASE_MOTOR_POWER);
-      set_right_motor_power(BASE_MOTOR_POWER);
+      else if (delivery_status == RETURN_TO_HALLWAY) {
+        if (last_turn == RIGHT_TURN) {
+          state = LEFT_TURN;
+        }
+        else {
+          state = RIGHT_TURN;
+        }
+
+        delivery_status = RETURN;
+      }
     }
-    
   }
   else {
-    uint8_t line_reading  = line_follower.get_line_reading(SENSITIVITY);
-    int16_t distance = line_follower.get_distance(line_reading);
+
+  uint8_t line_reading  = line_follower.get_line_reading(SENSITIVITY);
+  int16_t distance = line_follower.get_distance(line_reading);
+  switch (state)
+  {
+  case STRAIGHT:
     if (line_reading == 0) {
       missing_count++;
-      if (missing_count > 100) {
-        stop();
+      if (missing_count > 50) {
+        state = TURN_AROUND;
       }
     }
     else {
       missing_count = 0;
-      follow_line(distance);  
+      if (delivery_status == RETURN_TO_HALLWAY) {
+        follow_line(distance, true);  
+      }
+      else {
+        follow_line(distance, false);  
+      }
     }
+    break;
+  case TURN_AROUND:
+    if (delivery_status == ROOM_FOUND) {
+      delivery_status = RETURN_TO_HALLWAY;
+      state = STRAIGHT;
+      missing_count = 0;
+      return;
+    } 
+    else if (delivery_status == RETURN_TO_HALLWAY) {
+      set_left_motor_power(BASE_MOTOR_POWER);
+      set_right_motor_power(BASE_MOTOR_POWER);
+      return;
+    }
+    else if(delivery_status == RETURN) {
+      state = DONE;
+    }
+    set_left_motor_power(10);
+    set_right_motor_power(0);
+    if (line_reading & 0b11100111) {
+      set_left_motor_power(BASE_MOTOR_POWER);
+      set_right_motor_power(BASE_MOTOR_POWER);
+      state = STRAIGHT;
+    }
+    break;
+  case RIGHT_TURN:
+      set_left_motor_power(30);
+      set_right_motor_power(0);
+      last_turn = RIGHT_TURN;
+
+      if (line_reading & 0b1110000) {
+        set_left_motor_power(BASE_MOTOR_POWER);
+        set_right_motor_power(BASE_MOTOR_POWER);
+        state = STRAIGHT;
+      }
+      break;
+  case LEFT_TURN:
+      set_left_motor_power(0);
+      set_right_motor_power(30);
+      last_turn = LEFT_TURN;
+
+      if (line_reading & 0b0000111) {
+        set_left_motor_power(BASE_MOTOR_POWER);
+        set_right_motor_power(BASE_MOTOR_POWER);
+        state = STRAIGHT;
+      }
+      break;
+
+  default:
+    stop();
+  }
 
 #ifdef DEBUG
     Serial.print("Line follower: ");
