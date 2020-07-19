@@ -81,7 +81,7 @@ uint8_t LineFollower::get_line_reading(int s) {
 
 int16_t LineFollower::get_distance(uint8_t line_value) {
     //Array holding the distance from each sensor from the mid point
-    int16_t distances[] = {3938, 2813, 1688, 563, -563, -1168, -2813, -3938};
+    int16_t distances[] = {46, 33, 20, 7, -7, -20, -33, -46};
     int16_t sum = 0;
     int16_t divisor = 0;
     int16_t weight;
