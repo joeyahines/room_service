@@ -28,9 +28,9 @@ enum DELIVERY_STATUS {
   FINDING_ROOM,
   ROOM_FOUND,
   RETURN_TO_HALLWAY,
-  TURN_AROUND,
   STRAIGHTEN,
-  RETURN
+  RETURN,
+  RESET
 };
 
 enum DELIVERY_STATUS delivery_status = FINDING_ROOM;
@@ -50,13 +50,6 @@ void motor_setup() {
 
 void set_motor_power(float power, int pwm_pin, int in1, int in2) {
   int pwm_value = power * 2.55;
-
-  if (pwm_value > 127) {
-    pwm_value = 127;
-  }
-  else if (pwm_value < -127) {
-    pwm_value = -127;
-  }
 
   if (pwm_value < -5) {
     digitalWrite(in1, HIGH);
@@ -107,8 +100,8 @@ int get_room_number() {
   return buffer[3];
 }
 
-int16_t prev_error = 0;
-int16_t integral = 0;
+int32_t prev_error = 0;
+int32_t integral = 0;
 
 void follow_line(int16_t distance_from_line, bool reverse) {
     //Base power of the motors
@@ -125,9 +118,9 @@ void follow_line(int16_t distance_from_line, bool reverse) {
     }
 
     int16_t error = -distance_from_line;
-    integral = (integral + error)/5;
+    integral = (integral + error)/3;
     int16_t derivative = (error - prev_error)/3;
-    float kp = 1.4;
+    float kp = 0.7;
     float kd = 0.0;
     float ki = 0.0;
     power = kp * error + ki * integral + kd * derivative;
@@ -168,7 +161,7 @@ void stop() {
         digitalWrite(LED_BUILTIN, LOW);
       }
       state = !state;
-      delay(500);
+      delay(1000);
     }
 }
 
@@ -206,8 +199,12 @@ void loop() {
 #endif
 
     if (room_number == target_room) {
+      cross = 0;
       if (delivery_status == FINDING_ROOM) {
         delivery_status = ROOM_FOUND;
+      }
+      else if (delivery_status == RETURN) {
+        delivery_status = RESET;
       }
     }
   }
@@ -217,50 +214,55 @@ void loop() {
 
 
   switch (delivery_status) {
-    case RETURN:
-    case FINDING_ROOM:
-      if (line_reading == 0) {
-        missing_count++;
-        if ((missing_count) > 30 && delivery_status == RETURN) {
-          stop();
-        }
+    case RESET:
+      set_left_motor_power(BASE_MOTOR_POWER);
+      set_right_motor_power(-45);
+
+      if ((line_reading & 0b00001110) && cross > 1) {
+        stop();
       }
       else {
-        missing_count = 0;
-        follow_line(distance, false);
+        cross++;
       }
+      break;
+    case RETURN:
+      target_room = 3;
+    case FINDING_ROOM:
+      follow_line(distance, false);
       break;
     case ROOM_FOUND:
       set_left_motor_power(BASE_MOTOR_POWER);
       set_right_motor_power(0);
-      delay(250);
 
-      if (line_reading & 0b00111100) {
-        if (cross >= 2) {
-          set_left_motor_power(0);
-          set_right_motor_power(0);
-          delay(5000);
-          delivery_status = RETURN_TO_HALLWAY;
-        }
-        else {
-          cross++;
-        }
+      if (line_reading & 0b11000000) {
+        cross = 1;
+      }
+      if ((line_reading & 0b00111100) && cross > 0) {
+        set_left_motor_power(0);
+        set_right_motor_power(0);
+        delay(5000);
+        delivery_status = RETURN_TO_HALLWAY;
+        cross = 0;
       }
       break;
     case RETURN_TO_HALLWAY:
       set_left_motor_power(BASE_MOTOR_POWER);
       set_right_motor_power(0);
-      if (line_reading & 0b11100000) {
+      if (line_reading & 0b11000000) {
+        cross = 1;
+      }
+      else if ((line_reading & 0b11110000) && cross > 0) {
         set_left_motor_power(0);
         set_right_motor_power(0);
         delivery_status = STRAIGHTEN;
       }
+
     break;
     case STRAIGHTEN:
       set_left_motor_power(0);
       set_right_motor_power(35);
       if (line_reading & 0b00111100) {
-        delay(300);
+        delay(100);
         set_left_motor_power(0);
         set_right_motor_power(0);
         delivery_status = RETURN;
